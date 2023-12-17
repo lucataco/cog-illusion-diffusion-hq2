@@ -5,9 +5,9 @@ from cog import BasePredictor, Input, Path
 import os
 import torch
 import qrcode
-import random
 from PIL import Image
 from typing import List
+from compel import Compel
 from PIL.Image import LANCZOS
 from diffusers import (
     AutoencoderKL,
@@ -73,6 +73,7 @@ class Predictor(BasePredictor):
             torch_dtype=torch.float16,
             cache_dir=BASE_CACHE,
         ).to("cuda")
+        self.compel_proc = Compel(tokenizer=self.pipe.tokenizer, text_encoder=self.pipe.text_encoder)
 
     def generate_qrcode(self, qr_code_content, background, border, width, height):
         print("Generating QR Code from content")
@@ -117,9 +118,6 @@ class Predictor(BasePredictor):
         seed: int = Input(description="Seed", default=-1),
         width: int = Input(description="Width out the output image", default=768),
         height: int = Input(description="Height out the output image", default=768),
-        num_outputs: int = Input(
-            description="Number of outputs", ge=1, le=4, default=1
-        ),
         image: Path = Input(
             description="Input image. If none is provided, a QR code will be generated",
             default=None,
@@ -136,7 +134,7 @@ class Predictor(BasePredictor):
             choices=["gray", "white"],
             default="gray",
         ),
-    ) -> List[Path]:
+    ) -> Path:
         seed = torch.randint(0, 2**32, (1,)).item() if seed == -1 else seed
         print(f"Seed: {seed}")
         if image is None:
@@ -149,24 +147,20 @@ class Predictor(BasePredictor):
             image = Image.open(str(image))
 
         self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
+        prompt_embeds = self.compel_proc(prompt)
 
-        out = self.pipe(
-            prompt=[prompt] * num_outputs,
-            negative_prompt=[negative_prompt] * num_outputs,
-            image=[image] * num_outputs,
+        image = self.pipe(
+            prompt_embeds=prompt_embeds,
+            negative_prompt=negative_prompt,
+            image=image,
             width=width,
             height=height,
             guidance_scale=guidance_scale,
             controlnet_conditioning_scale=controlnet_conditioning_scale,
             generator=torch.Generator().manual_seed(seed),
             num_inference_steps=num_inference_steps,
-        )
-
-        outputs = []
-        for i, image in enumerate(out.images):
-            fname = f"/tmp/output-{i}.png"
-            image.save(fname)
-            outputs.append(Path(fname))
-
-        return outputs
+        ).images[0]
+        output_path = "/tmp/output.0.png"
+        image.save(output_path)
+        return Path(output_path)
 
